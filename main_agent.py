@@ -13,6 +13,7 @@ llm = ChatClovaX(model="HCX-003", max_tokens=2048)
 # 2. Tool 함수 정의
 from NaverDiscussionRAGPipeline import NaverDiscussionRAGPipeline 
 from ResearchRAGPipeline import ResearchRAGPipeline
+from StockPriceRAGPipeline import StockPriceRAGPipeline
 
 def run_discussion_analysis(question: str, stock_code="005930"):
     pipeline = NaverDiscussionRAGPipeline(
@@ -35,15 +36,26 @@ def run_research_analysis(question: str):
     pipeline.embed_and_store()
     return pipeline.query(question)
 
+def run_stock_price_analysis(question: str, stock_code="005930"):
+    pipeline = StockPriceRAGPipeline(
+        db_path="./chroma_langchain_db",
+        collection_name="clovastudiodatas_stock_price_docs"
+    )
+    pipeline.fetch_and_save(stock_code)
+    pipeline.embed_and_store()
+    return pipeline.query(question)
+
 # 3. Tool 등록 (이름-함수 매핑)
 tool_map = {
     "DiscussionCrawlerTool": run_discussion_analysis,
-    "ResearchRAGTool": run_research_analysis
+    "ResearchRAGTool": run_research_analysis,
+    "StockPriceRAGTool": run_stock_price_analysis
 }
 
 tool_desc = """
 - 종목 토론방 분석: DiscussionCrawlerTool
 - 전문가 리서치 분석: ResearchRAGTool
+- 주가 데이터 분석: StockPriceRAGTool (현재 날짜와 최근 2달간의 종가 변화 데이터 기반)
 """
 
 # 4. 프롬프트 템플릿 (Action/Observation/Final Answer 포맷 강조)
@@ -66,49 +78,61 @@ prompt_template = ChatPromptTemplate.from_template(
 - Thought: 다음 단계에 대한 생각(필요시)
 - Final Answer: 최종 투자 판단 및 근거
 
+특히 StockPriceRAGTool을 활용할 때는 반드시 '오늘 날짜와 최근 2달간의 종가 변화 데이터'를 근거로 매수/매도/유지 중 하나를 추천하고, 그 판단의 구체적 수치(예: 최근 수익률, 변동성 등)를 명시하세요.
+
 반드시 Action/Observation 단계를 거친 후에만 Final Answer를 출력하세요.
 한 번에 Action과 Final Answer를 동시에 출력하지 마세요.
+
+각 툴(DiscussionCrawlerTool, ResearchRAGTool, StockPriceRAGTool)을 반드시 한 번씩 모두 사용하세요.
+각 툴의 Observation을 모두 받은 후에만 Final Answer를 출력하세요.
+최종 답변에는 각 툴의 Observation 요약을 반드시 포함하세요.
 """)
 
 # 5. LLM 호출 함수
 def call_llm(history: str) -> str:
-    # LLM에 대화 이력(history)을 입력으로 전달
     response = llm.invoke(history)
     if hasattr(response, 'content'):
         return response.content
     return str(response)
 
-# 6. ReAct 루프 구현
+# 6. 강제 ReAct 루프 구현 (한 번에 하나의 Action만 실행)
 def react_loop(user_question: str):
-    # 1. 첫 프롬프트 생성
     history = prompt_template.format(input=user_question, tool_desc=tool_desc)
     print("[LLM 프롬프트]\n" + history + "\n")
     step = 1
+    action_observation_log = []
     while True:
         print(f"\n[STEP {step}] LLM 호출 중...")
         llm_output = call_llm(history)
         print(f"\n[LLM 출력]\n{llm_output}\n")
 
-        # 2. Action/Observation/Final Answer 파싱
-        action_match = re.search(r"Action\s*:\s*(\w+)", llm_output)
-        action_input_match = re.search(r"Action Input\s*:\s*(.+)", llm_output)
+        # 여러 Action/Observation/Final Answer가 한 번에 나올 수 있으므로, 모두 파싱
+        # Action/Action Input/Observation/Final Answer를 모두 리스트로 추출
+        action_blocks = re.findall(r"Action\s*:\s*(\w+)\s*Action Input\s*:?\s*(.*?)\s*(?=Action\s*:|Final Answer:|$)", llm_output, re.DOTALL)
+        observation_blocks = re.findall(r"Observation\s*:\s*(.*?)(?=Action\s*:|Final Answer:|$)", llm_output, re.DOTALL)
         final_answer_match = re.search(r"Final Answer\s*:\s*(.+)", llm_output, re.DOTALL)
 
+        # 만약 Final Answer가 있으면 루프 종료
         if final_answer_match:
             print("\n[최종 답변]")
             print(final_answer_match.group(1).strip())
+            print("\n[분석에 사용된 툴 및 Observation 요약]")
+            for idx, (tool, obs) in enumerate(action_observation_log, 1):
+                print(f"{idx}. {tool}: {obs[:200]}{'...' if len(obs)>200 else ''}")
             break
-        elif action_match and action_input_match:
-            tool_name = action_match.group(1).strip()
-            tool_input = action_input_match.group(1).strip()
+
+        # 여러 Action이 한 번에 나올 경우, 첫 번째 Action만 실행
+        if action_blocks:
+            tool_name, tool_input = action_blocks[0]
+            tool_name = tool_name.strip()
+            tool_input = tool_input.strip()
             print(f"\n[도구 실행] {tool_name} (입력: {tool_input})")
             tool_func = tool_map.get(tool_name)
             if tool_func is None:
                 observation = f"[ERROR] 지원하지 않는 도구: {tool_name}"
             else:
                 try:
-                    # 도구 입력값이 여러 개일 경우(예: 콤마로 구분) 처리
-                    if tool_name == "DiscussionCrawlerTool" and ',' in tool_input:
+                    if tool_name in ["DiscussionCrawlerTool", "StockPriceRAGTool"] and ',' in tool_input:
                         q, code = tool_input.split(',', 1)
                         observation = tool_func(q.strip(), code.strip())
                     else:
@@ -117,6 +141,7 @@ def react_loop(user_question: str):
                     observation = f"[ERROR] 도구 실행 중 오류: {e}"
             # Observation을 history에 추가
             history += f"\nObservation: {observation}\n"
+            action_observation_log.append((tool_name, observation))
         else:
             print("[ERROR] LLM 출력에서 Action/Final Answer를 찾을 수 없습니다.\n출력:\n", llm_output)
             break
