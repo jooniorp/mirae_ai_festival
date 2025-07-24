@@ -9,7 +9,7 @@ from tqdm import tqdm
 from typing import List
 import chromadb
 from langchain_core.documents import Document
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_community.embeddings import ClovaXEmbeddings
 from langchain_community.chat_models import ChatClovaX
 from langchain_core.output_parsers import StrOutputParser
@@ -21,8 +21,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException
 from webdriver_manager.chrome import ChromeDriverManager
-
-
 
 class NaverDiscussionRAGPipeline:
     def __init__(self, json_path: str, db_path: str, collection_name: str):
@@ -73,7 +71,7 @@ class NaverDiscussionRAGPipeline:
         url = f"https://m.stock.naver.com/domestic/stock/{stock_code}/discussion"
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
         driver.get(url)
-        time.sleep(0.5)
+        time.sleep(1)
 
         comments = []
         prev_count = 0
@@ -85,10 +83,10 @@ class NaverDiscussionRAGPipeline:
                 more_btn = driver.find_element(By.XPATH, '//*[@id="content"]/div[12]/div/button')
                 if more_btn.is_displayed():
                     more_btn.click()
-                    time.sleep(0.5)
+                    time.sleep(1)
             except (NoSuchElementException, ElementNotInteractableException):
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(0.5)
+                time.sleep(1)
 
             elements = driver.find_elements(By.XPATH, '//li[contains(@class, "DiscussionPostWrapper_article")]')
             if len(elements) == prev_count:
@@ -141,19 +139,35 @@ class NaverDiscussionRAGPipeline:
         group_size = 10
         for i in tqdm(range(0, len(docs), group_size), desc="Segmentation 요청 처리"):
             group = docs[i:i+group_size]
-            merged_text = "\n\n".join([d.page_content for d in group])
+            merged_discussion_text = "\n\n".join([d.page_content for d in group])
             merged_ids = [d.metadata.get("id") for d in group]
             try:
-                result_data = self._send_segmentation_request(merged_text)
+                result_data = self._send_segmentation_request(merged_discussion_text)
                 for paragraph in result_data:
                     self.chunked_docs.append({
                         "page_content": paragraph,
                         "metadata": {"source_ids": merged_ids}
                     })
-                time.sleep(0.5)
+                time.sleep(1)
             except Exception as e:
                 print(f"Segmentation 실패: {e}")
                 time.sleep(3)
+        
+        # 파일 저장
+        os.makedirs("./data", exist_ok=True)
+
+        # JSON 저장
+        with open("./data/comment.json", "w", encoding="utf-8") as f_json:
+            json.dump(self.chunked_docs, f_json, ensure_ascii=False, indent=2)
+            print("comment.json 저장 완료")
+
+        # TXT 저장
+        merged_text = "\n\n".join(item["page_content"] for item in self.chunked_docs)
+        with open("./data/merged_discussion_text.txt", "w", encoding="utf-8") as f_txt:
+            f_txt.write(merged_text.strip())
+            print("merged_discussion_text.txt 저장 완료")
+                
+                
 
     def embed_and_store(self):
         if not self.chunked_docs:
@@ -181,11 +195,19 @@ class NaverDiscussionRAGPipeline:
         for doc in self.documents:
             original = doc.metadata
             source_ids = original.get("source", {}).get("source_ids", [])
+
+            # 핵심 수정: 문자열 보장 + 길이 제한 + 널문자 제거
+            text = str(doc.page_content).replace("\x00", "").strip()[:8000]
+            
+            if not text:
+                continue  # 빈 텍스트는 건너뜀
+
             flattened_metadata = {
                 "source_ids": ",".join(source_ids) if isinstance(source_ids, list) else str(source_ids),
                 "id": original.get("id", "")
             }
-            texts.append(doc.page_content)
+
+            texts.append(text)
             metadatas.append(flattened_metadata)
 
         self.vectorstore.add_texts(texts=texts, metadatas=metadatas)
