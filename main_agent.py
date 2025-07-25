@@ -47,13 +47,13 @@ def run_stock_price_analysis(question: str, stock_code="005930"):
 
 # 3. Tool 등록 (이름-함수 매핑)
 tool_map = {
-    "DiscussionCrawlerTool": run_discussion_analysis,
+    "NaverDiscussionRAGPipeline": run_discussion_analysis,
     "ResearchRAGTool": run_research_analysis,
     "StockPriceRAGTool": run_stock_price_analysis
 }
 
 tool_desc = """
-- 종목 토론방 분석: DiscussionCrawlerTool
+- 종목 토론방 분석: NaverDiscussionRAGPipeline
 - 전문가 리서치 분석: ResearchRAGTool
 - 주가 데이터 분석: StockPriceRAGTool (현재 날짜와 최근 2달간의 종가 변화 데이터 기반)
 """
@@ -83,7 +83,7 @@ prompt_template = ChatPromptTemplate.from_template(
 반드시 Action/Observation 단계를 거친 후에만 Final Answer를 출력하세요.
 한 번에 Action과 Final Answer를 동시에 출력하지 마세요.
 
-각 툴(DiscussionCrawlerTool, ResearchRAGTool, StockPriceRAGTool)을 반드시 한 번씩 모두 사용하세요.
+각 툴(NaverDiscussionRAGPipeline, ResearchRAGTool, StockPriceRAGTool)을 반드시 한 번씩 모두 사용하세요.
 각 툴의 Observation을 모두 받은 후에만 Final Answer를 출력하세요.
 최종 답변에는 각 툴의 Observation 요약을 반드시 포함하세요.
 """)
