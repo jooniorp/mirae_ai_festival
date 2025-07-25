@@ -22,6 +22,37 @@ from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException
 from webdriver_manager.chrome import ChromeDriverManager
 
+# 정치적 키워드 상수 정의
+POLITICAL_KEYWORDS = [
+    # 정치 기관 및 정당
+    '정치', '정부', '대통령', '국회', '여당', '야당', '민주당', '국민의힘', '자유한국당',
+    
+    # 정치인
+    '문재인', '윤석열', '이재명', '이명박', '박근혜', '노무현', '김대중',
+    
+    # 정치 제도
+    '정책', '법안', '입법', '행정부', '사법부', '선거', '투표', '후보', '당선', '낙선', '여론조사',
+    '국정감사', '청문회', '탄핵', '국정', '국정조사', '특별법', '특별검사',
+    
+    # 대북 및 외교
+    '북한', '김정은', '남북', '통일', '대북', '외교', '외무부',
+    
+    # 국방 및 안보
+    '군대', '국방', '안보',
+    
+    # 정치 활동
+    '시위', '집회', '데모', '항의', '반대',
+    
+    # 정치 이념
+    '좌파', '우파', '진보', '보수', '이념', '사상',
+    
+    # 정치 관련 은어
+    '트통', '도람뿌', '왕짜이밍', '빤쥬목사', '성조기', '태극기',
+    '관세', '미국', '중국', '일본', '러시아', '이스라엘',
+    '매국노', '기부', '협상', '만찬', '대사관', '촛불', '빤쓰교', '개딸', '고홈',
+    '공황', '대폭락', '관세폭탄', '지뢰'
+]
+
 class NaverDiscussionRAGPipeline:
     def __init__(self, json_path: str, db_path: str, collection_name: str):
         load_dotenv(override=True)
@@ -67,7 +98,7 @@ class NaverDiscussionRAGPipeline:
         else:
             raise ValueError(f"Segmentation 실패: {result}")
 
-    def crawl_comments(self, stock_code="005930", max_scroll=10, output_path="./data/comments.json"):
+    def crawl_comments(self, stock_code="005930", max_scroll=20, output_path="./data/discussion_comments.json"):
         url = f"https://m.stock.naver.com/domestic/stock/{stock_code}/discussion"
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
         driver.get(url)
@@ -97,7 +128,7 @@ class NaverDiscussionRAGPipeline:
                 no_change_count = 0
             prev_count = len(elements)
 
-            if time.time() - start_time > 30:
+            if time.time() - start_time > 60:  # 60초로 증가
                 break
 
         for elem in elements:
@@ -114,10 +145,68 @@ class NaverDiscussionRAGPipeline:
 
         driver.quit()
 
+        # 정치적 내용 필터링 및 종목 관련성 검증
+        filtered_comments = self._filter_relevant_comments(comments, stock_code)
+        
+        # 240개를 목표로 하되, 부족하면 원본에서 추가
+        target_count = 240
+        if len(filtered_comments) < target_count:
+            print(f"[댓글 부족] 필터링된 댓글 {len(filtered_comments)}개, 목표 {target_count}개")
+            # 원본에서 정치적 키워드만 제외하고 추가
+            backup_comments = []
+            for comment in comments:
+                content = comment.get("content", "").lower()
+                has_political = any(keyword in content for keyword in POLITICAL_KEYWORDS)
+                if not has_political and len(content.strip()) >= 5:
+                    # 추가 검증: 정치적 내용이 전혀 없는 경우만 포함
+                    political_count = sum(1 for keyword in POLITICAL_KEYWORDS if keyword in content)
+                    if political_count == 0:
+                        backup_comments.append(comment)
+            
+            # 중복 제거하면서 추가
+            existing_contents = {comment.get("content", "") for comment in filtered_comments}
+            for comment in backup_comments:
+                if comment.get("content", "") not in existing_contents:
+                    filtered_comments.append(comment)
+                    if len(filtered_comments) >= target_count:
+                        break
+            
+            print(f"[댓글 보충] 최종 {len(filtered_comments)}개 확보")
+        
+        # 최대 240개로 제한
+        if len(filtered_comments) > target_count:
+            filtered_comments = filtered_comments[:target_count]
+
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(comments, f, ensure_ascii=False, indent=2)
-        print(f"댓글 {len(comments)}개 저장 완료: {output_path}")
+            json.dump(filtered_comments, f, ensure_ascii=False, indent=2)
+        print(f"원본 댓글 {len(comments)}개 중 종목 관련 댓글 {len(filtered_comments)}개 저장 완료: {output_path}")
+        
+        return filtered_comments
+
+    def _filter_relevant_comments(self, comments, stock_code="005930"):
+        """정치적 내용을 필터링하고 종목에 직접적인 영향을 주는 의견만 선별"""
+        
+        filtered_comments = []
+        
+        for comment in comments:
+            content = comment.get("content", "").lower()
+            
+            # 정치적 키워드가 포함된 경우 제외
+            has_political = any(keyword in content for keyword in POLITICAL_KEYWORDS)
+            if has_political:
+                continue
+            
+            # 정치적 키워드가 없으면 포함 (은어나 새로운 표현도 포착 가능)
+            if len(content.strip()) >= 10:  # 최소 10자 이상
+                # 추가 검증: 정치적 내용이 전혀 없는 경우만 포함
+                political_count = sum(1 for keyword in POLITICAL_KEYWORDS if keyword in content)
+                if political_count == 0:
+                    filtered_comments.append(comment)
+        
+        print(f"[필터링 결과] 원본 {len(comments)}개 → 정치적 내용 제외 후 {len(filtered_comments)}개")
+        
+        return filtered_comments
 
     def _load_documents(self):
         with open(self.json_path, "r", encoding="utf-8") as f:
@@ -157,17 +246,15 @@ class NaverDiscussionRAGPipeline:
         os.makedirs("./data", exist_ok=True)
 
         # JSON 저장
-        with open("./data/comment.json", "w", encoding="utf-8") as f_json:
+        with open("./data/discussion_segments.json", "w", encoding="utf-8") as f_json:
             json.dump(self.chunked_docs, f_json, ensure_ascii=False, indent=2)
-            print("comment.json 저장 완료")
+            print("discussion_segments.json 저장 완료")
 
         # TXT 저장
         merged_text = "\n\n".join(item["page_content"] for item in self.chunked_docs)
         with open("./data/merged_discussion_text.txt", "w", encoding="utf-8") as f_txt:
             f_txt.write(merged_text.strip())
             print("merged_discussion_text.txt 저장 완료")
-                
-                
 
     def embed_and_store(self):
         if not self.chunked_docs:
@@ -220,23 +307,29 @@ class NaverDiscussionRAGPipeline:
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 5})
         prompt = PromptTemplate.from_template(
             """당신은 금융 전문가이자 투자 심리 분석가입니다.
-아래에 제공된 문맥(context)은 특정 종목에 대한 최근 투자자들의 댓글과 여론입니다.
-당신의 임무는 이 문맥에 포함된 여론을 객관적으로 요약하고, 투자 심리와 감정적 분위기를 평가하는 것입니다.
+               아래에 제공된 문맥(context)은 특정 종목에 대한 최근 투자자들의 댓글과 여론입니다.
+               당신의 임무는 이 문맥에 포함된 여론을 객관적으로 요약하고, 투자 심리와 감정적 분위기를 평가하는 것입니다.
 
-답변 시 다음 지침을 따르세요:
-- 전반적인 여론을 '긍정적', '부정적', '혼재됨', '중립적' 중 하나로 분류하세요.
-- 투자자들의 태도와 심리를 간단히 요약해 주세요.
-- 비속어나 혐오 표현은 그대로 반복하지 않고, 해당 표현이 사용되었음을 언급만 해주세요.
-- 문맥에 충분한 정보가 없으면 '주어진 정보에서 여론을 평가하기 어렵습니다'라고 답변해 주세요.
+               종목 토론방의 특징:
+               - 비전문적이지만 실시간 투자자 여론과 시장 관심도를 빠르게 파악할 수 있음
+               - 투자자들의 즉각적인 반응과 감정을 반영
+               - 시장의 단기적 분위기와 관심도를 측정하는 지표로 활용
 
-# Question:
-{question}
+               답변 시 다음 지침을 따르세요:
+               - 전반적인 여론을 '긍정적', '부정적', '혼재됨', '중립적' 중 하나로 분류하세요.
+               - 투자자들의 태도와 심리를 간단히 요약해 주세요.
+               - 시장 관심도와 토론 활성화 정도를 평가해 주세요.
+               - 비속어나 혐오 표현은 그대로 반복하지 않고, 해당 표현이 사용되었음을 언급만 해주세요.
+               - 문맥에 충분한 정보가 없으면 '주어진 정보에서 여론을 평가하기 어렵습니다'라고 답변해 주세요.
 
-# Context:
-{context}
+               # Question:
+               {question}
 
-# Answer:"""
-        )
+               # Context:
+               {context}
+
+               # Answer:"""
+            )
 
         def format_docs(docs: List[Document]) -> str:
             return "\n\n".join(doc.page_content for doc in docs)
@@ -257,7 +350,7 @@ class NaverDiscussionRAGPipeline:
 
 def main():
     pipeline = NaverDiscussionRAGPipeline(
-        json_path="./data/comments.json",
+        json_path="./data/discussion_comments.json",
         db_path="./chroma_langchain_db",
         collection_name="clovastudiodatas_discussion_docs"
     )
@@ -277,7 +370,6 @@ def main():
 
     print("\n질문:", query)
     print("분석 결과:\n", answer)
-
 
 # 메인 실행
 if __name__ == "__main__":
