@@ -12,17 +12,17 @@
 
 
 ## 주요 기능 및 구조
-### 1. 종토방 여론 분석 (NaverDiscussionRAGPipeline)
+### 1. 종토방 여론 분석 (NaverDiscussionRAGPipeline.py)
 * 네이버 종목 토론방(종토방)에서 실시간 댓글/여론을 크롤링
 * 정치적/비속어 필터링, 종목 관련성 검증
 * 세그멘테이션 및 임베딩 후 ChromaDB에 저장
 * 투자자 심리, 시장 관심도, 여론 분포를 요약
-### 2. 전문가 리서치 분석 (ResearchRAGPipeline)
+### 2. 전문가 리서치 분석 (ResearchRAGPipeline.py)
 * PDF 폴더 내 리서치 리포트 자동 추출
 * 중요도(투자의견, 목표주가, 애널리스트 등) 기반 문서 정렬
 * 세그멘테이션 및 임베딩 후 ChromaDB에 저장
 * 전문가 의견, 실적, 목표주가 등 핵심 정보 요약
-### 3. 주가 데이터 분석 (StockPriceRAGTool)
+### 3. 주가 데이터 분석 (StockPriceRAGTool.py)
 * 실시간/최근 2달간의 주가 데이터 자동 수집
 * 가격 변동, 추세, 주요 이슈 등 분석
 * 임베딩 후 ChromaDB에 저장
@@ -31,7 +31,7 @@
 * 최대 5개, 상위 성과 2개 유지(품질 평가 기반)
 * 유사 질문/분석 recall, 최근/최고 성과 분석 조회, 패턴 추출 등 지원
 * 자기 발전: 성공적인 분석 패턴을 학습하여 도구 순서/전략 최적화
-### 5. 에이전트(react_loop) 구조
+### 5. 에이전트 (main_agent.py)
 * ReAct 패턴: Thought → Action → Observation → 반복
 * LLM이 한 번에 하나의 Action만 선택, 코드가 반드시 실행
 * Observation은 도구 실행 결과만 기록(LLM이 출력한 Observation 무시)
