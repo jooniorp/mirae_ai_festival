@@ -216,7 +216,7 @@ def call_llm(history: str) -> str:
         else:
             raise e
 
-# 7. 지능적 ReAct 루프 구현 (Token 제한에 영향받지 않는 완전한 분석)
+# 7. ReAct 루프 구현
 def react_loop(user_question: str):
     # 회사 정보 추출
     company_name, stock_code = extract_company_info(user_question)
@@ -225,7 +225,7 @@ def react_loop(user_question: str):
     print(f"\n[분석 대상] 회사: {company_name} (종목코드: {stock_code})")
     print(f"[도구별 질문] {tool_questions}")
     
-    # 🧠 메모리 기반 최적화: 유사한 이전 분석 확인
+    # 메모리 기반 최적화: 유사한 이전 분석 확인
     print("\n[메모리 기반 최적화] 유사한 이전 분석 확인 중...")
     similar_analyses = agent_memory.recall_similar_analysis(user_question, top_k=2)
     if "유사한 분석 결과가 없습니다" not in similar_analyses:
