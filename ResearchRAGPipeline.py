@@ -6,6 +6,7 @@ import os
 import http.client
 import json
 import chromadb
+import random
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 from pathlib import Path
@@ -18,7 +19,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain.schema.runnable import RunnableParallel
-import random
 
 class CLOVAStudioExecutor:
     def __init__(self, host, api_key):
@@ -70,6 +70,11 @@ class ResearchRAGPipeline:
         load_dotenv(override=True)
         self.embedding_model = ClovaXEmbeddings(model="bge-m3")
         self.client = chromadb.PersistentClient(path=db_path)
+        # 기존 컬렉션 삭제 후 새로 생성
+        try:
+            self.client.delete_collection(name=self.collection_name)
+        except Exception:
+            pass  # 컬렉션이 없으면 무시
         self.collection_name = collection_name
         self.vectorstore = Chroma(
             client=self.client,
@@ -137,27 +142,54 @@ class ResearchRAGPipeline:
         data_json = []
         merged_text = ""
 
-        # PDF 파일들을 중요도 순으로 정렬
+        # PDF 파일들을 날짜 기준(최신순)으로 정렬
         pdf_files = []
+        date_check_list = []  # 날짜 파싱 결과 확인용
+        import re
+        def extract_date_from_text(text):
+            # 다양한 날짜 포맷 지원 (YYYYMMDD, YYYY-MM-DD, YYYY.MM.DD 등)
+            patterns = [
+                r'(20\\d{2})[.\\-년 ]?(\\d{1,2})[.\\-월 ]?(\\d{1,2})',  # 20250709, 2025-07-09, 2025.07.09, 2025년 7월 9일
+            ]
+            for pat in patterns:
+                m = re.search(pat, text)
+                if m:
+                    y, mth, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
+                    return f'{y}{mth}{d}'
+            return None
+
         for file in path.glob("*.pdf"):
             if file.name in self.processed_files:
                 continue  # 이미 처리된 파일 스킵
-                
-            # 파일 크기로 초기 중요도 추정
-            file_size = file.stat().st_size
-            pdf_files.append((file, file_size))
-        
-        # 파일 크기 순으로 정렬 (큰 파일이 더 중요할 가능성)
-        pdf_files.sort(key=lambda x: x[1], reverse=True)
-
-        for file, file_size in pdf_files:
-            print(f"PDF 처리 중: {file.name} ({file_size:,} bytes)")
+            # PDF 본문에서 날짜 추출
+            import fitz
             text = ""
             doc = fitz.open(str(file))
             for page in doc:
                 text += re.sub(r'\s+', ' ', page.get_text()).strip() + "\n"
             doc.close()
+            date_str = extract_date_from_text(text)
+            date_source = "본문"
+            # 본문에서 추출 실패 시 파일명에서 추출
+            if not date_str:
+                m = re.search(r'_(\d{8})_', file.name)
+                if m:
+                    date_str = m.group(1)
+                    date_source = "파일명"
+                else:
+                    date_str = "00000000"
+                    date_source = "없음"
+            pdf_files.append((file, date_str, text))
+            date_check_list.append((file.name, date_str, date_source))
+        # 날짜(YYYYMMDD) 기준 내림차순(최신순) 정렬
+        pdf_files.sort(key=lambda x: x[1], reverse=True)
+        # 날짜 파싱 결과 전체 출력
+        print("[PDF 파일별 날짜 파싱 결과]")
+        for fname, dstr, src in date_check_list:
+            print(f"- {fname} → {dstr} (근거: {src})")
 
+        for file, date_str, text in pdf_files:
+            print(f"PDF 처리 중: {file.name} (날짜: {date_str})")
             metadata = self._extract_metadata_from_text(text)
             document = Document(
                 page_content=text.strip(),
@@ -174,7 +206,6 @@ class ResearchRAGPipeline:
 
             # 텍스트 파일 누적
             merged_text += f"\n\n[파일명: {file.name}]\n{text.strip()}"
-            
             # 처리된 파일 기록
             self.processed_files.add(file.name)
 
@@ -307,8 +338,8 @@ class ResearchRAGPipeline:
                     
                 except Exception as e:
                     if "429" in str(e):
-                        print(f"429 에러 발생 → 15초 대기 후 재시도 (doc_{i+j})")
-                        time.sleep(15.0)
+                        print(f"429 에러 발생 → 30초 대기 후 재시도 (doc_{i+j})")
+                        time.sleep(30.0)  # 30초 대기
                         try:
                             embedding = self.embedding_model.embed_documents([text])[0]
                             self.vectorstore.add_texts(
@@ -319,15 +350,18 @@ class ResearchRAGPipeline:
                             success += 1
                         except Exception as e2:
                             print(f"재시도 실패 (doc_{i+j}): {e2}")
+                            # 실패한 문서는 건너뛰고 계속 진행
+                            continue
                     else:
                         print(f"저장 실패 (doc_{i+j}): {e}")
+                        continue
                 
-                # 개별 문서 간 지연
-                time.sleep(2.0)
+                # 개별 문서 간 지연 (더 긴 대기 시간)
+                time.sleep(3.0 + random.uniform(0, 2))
             
-            # 배치 간 지연
+            # 배치 간 지연 (더 긴 대기 시간)
             if i + batch_size < len(texts):
-                time.sleep(8.0)
+                time.sleep(10.0 + random.uniform(0, 5))
             
             # 메모리 정리
             if i % 6 == 0:
@@ -343,24 +377,26 @@ class ResearchRAGPipeline:
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 5})
 
         prompt = PromptTemplate.from_template(
-            """당신은 금융 전문가이자 투자 심리 분석가입니다.
-                아래에 제공된 문맥(context)은 특정 종목에 대한 전문가 리서치 보고서입니다.
-                당신의 임무는 이 문맥을 기반으로 사용자의 질문에 대한 요약된 분석을 제공하는 것입니다.
+            '''당신은 금융 전문가이자 투자 심리 분석가입니다.
+아래에 제공된 문맥(context)은 특정 종목에 대한 전문가 리서치 보고서입니다.
+당신의 임무는 이 문맥을 기반으로 사용자의 질문에 대한 요약된 분석을 제공하는 것입니다.
 
-                답변 시 다음 지침을 따르세요:
-                - 정보의 출처가 명확하지 않으면 "정확한 정보가 확인되지 않습니다"라고 말하세요.
-                - 핵심 요점을 간결하게 전달하세요.
-                - 숫자나 회사명은 정확히 반복하고, 근거가 부족한 예측은 피하세요.
-                - 투자의견, 목표주가, 애널리스트 정보가 있으면 반드시 포함하세요.
+답변 시 다음 지침을 따르세요:
+- 정보의 출처가 명확하지 않으면 "정확한 정보가 확인되지 않습니다"라고 말하세요.
+- 핵심 요점을 간결하게 전달하세요.
+- 숫자나 회사명은 정확히 반복하고, 근거가 부족한 예측은 피하세요.
+- 투자의견, 목표주가, 애널리스트 정보가 있으면 반드시 포함하세요.
 
-                # Question:
-                {question}
+⚠️ 반드시 실제 도구 실행 결과만 사용하세요. 예시를 복사하지 마세요.
 
-                # Context:
-                {context}
+# Question:
+{question}
 
-                # Answer:"""
-                )
+# Context:
+{context}
+
+# Answer:'''
+        )
 
         def format_docs(docs: List[Document]) -> str:
             return "\n\n".join(doc.page_content[:1500] for doc in docs)
