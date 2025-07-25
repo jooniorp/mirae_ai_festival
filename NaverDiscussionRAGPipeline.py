@@ -3,6 +3,7 @@ import json
 import uuid
 import time
 import http.client
+import random
 from http import HTTPStatus
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -21,6 +22,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException
 from webdriver_manager.chrome import ChromeDriverManager
+import shutil
 
 # 정치적 키워드 상수 정의
 POLITICAL_KEYWORDS = [
@@ -100,7 +102,20 @@ class NaverDiscussionRAGPipeline:
 
     def crawl_comments(self, stock_code="005930", max_scroll=20, output_path="./data/discussion_comments.json"):
         url = f"https://m.stock.naver.com/domestic/stock/{stock_code}/discussion"
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+        # Chrome 옵션 설정
+        chrome_options = webdriver.ChromeOptions()
+        chrome_options.add_argument('--headless')  # 헤드리스 모드
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--log-level=3')  # 에러 메시지만 표시
+        chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])  # 로그 숨김
+        chrome_options.add_argument('--silent')
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         driver.get(url)
         time.sleep(1)
 
@@ -271,7 +286,12 @@ class NaverDiscussionRAGPipeline:
             ))
 
         client = chromadb.PersistentClient(path=self.db_path)
-        client.get_or_create_collection(name=self.collection_name, metadata={"hnsw:space": "cosine"})
+        # 기존 컬렉션 삭제 후 새로 생성
+        try:
+            client.delete_collection(name=self.collection_name)
+        except Exception:
+            pass  # 컬렉션이 없으면 무시
+        client.create_collection(name=self.collection_name, metadata={"hnsw:space": "cosine"})
         self.vectorstore = Chroma(
             client=client,
             collection_name=self.collection_name,
@@ -306,30 +326,24 @@ class NaverDiscussionRAGPipeline:
 
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 5})
         prompt = PromptTemplate.from_template(
-            """당신은 금융 전문가이자 투자 심리 분석가입니다.
-               아래에 제공된 문맥(context)은 특정 종목에 대한 최근 투자자들의 댓글과 여론입니다.
-               당신의 임무는 이 문맥에 포함된 여론을 객관적으로 요약하고, 투자 심리와 감정적 분위기를 평가하는 것입니다.
+            '''당신은 금융 전문가이자 투자 심리 분석가입니다.
+아래에 제공된 문맥(context)은 특정 종목에 대한 최근 투자자들의 댓글과 여론입니다.
+당신의 임무는 이 문맥에 포함된 여론을 객관적으로 요약하고, 투자 심리와 감정적 분위기를 평가하는 것입니다.
 
-               종목 토론방의 특징:
-               - 비전문적이지만 실시간 투자자 여론과 시장 관심도를 빠르게 파악할 수 있음
-               - 투자자들의 즉각적인 반응과 감정을 반영
-               - 시장의 단기적 분위기와 관심도를 측정하는 지표로 활용
+답변 형식(반드시 아래 형식을 지키세요):
+여론 점수: (0~100, 부정적일수록 0, 긍정적일수록 100)
+설명: 왜 이런 점수가 나왔는지, 근거가 되는 여론/심리/표현을 요약
 
-               답변 시 다음 지침을 따르세요:
-               - 전반적인 여론을 '긍정적', '부정적', '혼재됨', '중립적' 중 하나로 분류하세요.
-               - 투자자들의 태도와 심리를 간단히 요약해 주세요.
-               - 시장 관심도와 토론 활성화 정도를 평가해 주세요.
-               - 비속어나 혐오 표현은 그대로 반복하지 않고, 해당 표현이 사용되었음을 언급만 해주세요.
-               - 문맥에 충분한 정보가 없으면 '주어진 정보에서 여론을 평가하기 어렵습니다'라고 답변해 주세요.
+⚠️ 반드시 실제 도구 실행 결과만 사용하세요. 예시를 복사하지 마세요.
 
-               # Question:
-               {question}
+# Question:
+{question}
 
-               # Context:
-               {context}
+# Context:
+{context}
 
-               # Answer:"""
-            )
+# Answer:'''
+        )
 
         def format_docs(docs: List[Document]) -> str:
             return "\n\n".join(doc.page_content for doc in docs)
@@ -354,20 +368,15 @@ def main():
         db_path="./chroma_langchain_db",
         collection_name="clovastudiodatas_discussion_docs"
     )
-
     # 0단계: 댓글 크롤링부터 자동 실행
     pipeline.crawl_comments(stock_code="005930")  # 삼성전자
-
     # 1단계: CLOVA 세그멘테이션 수행
     pipeline.segment_documents()
-
     # 2단계: 임베딩 후 Chroma 저장
     pipeline.embed_and_store()
-
     # 3단계: 테스트 질의
     query = "삼성전자에 대한 최근 여론이 어때?"
     answer = pipeline.query_opinion(query)
-
     print("\n질문:", query)
     print("분석 결과:\n", answer)
 
