@@ -98,8 +98,8 @@ class ResearchRAGPipeline:
             "importance_score": 0  # 중요도 점수 추가
         }
         
-        # 회사명 추출
-        company_match = re.search(r"([가-힣]+(?:전자|화학|바이오|에너지|솔루션|건설|증권|은행|제약))", text)
+        # 회사명 추출 (영어 포함)
+        company_match = re.search(r"([가-힣A-Za-z]+(?:전자|화학|바이오|에너지|솔루션|건설|증권|은행|제약))", text)
         if company_match:
             metadata["company"] = company_match.group(1)
 
