@@ -32,6 +32,22 @@ class AgentMemory:
         """분석 품질 평가 (0-10점)"""
         score = 0
         
+        # 뉴스 트리거만 실행된 경우 (안정적 상태 판단)
+        is_news_trigger_only = (
+            len(analysis.get("tools_used", [])) == 1 and 
+            "NewsRAGTool" in analysis.get("tools_used", []) and
+            "안정적 상태" in analysis.get("final_answer", "")
+        )
+        
+        if is_news_trigger_only:
+            # 뉴스 트리거 시스템의 정상적인 동작
+            score = 6  # 기본 점수
+            final_answer = analysis.get("final_answer", "").lower()
+            if "안정적" in final_answer and "추가 분석 없이" in final_answer:
+                score += 2  # 명확한 판단
+            return min(score, 10)
+        
+        # 일반적인 종합 분석의 경우
         # 도구 사용 다양성 (최대 3점)
         unique_tools = len(set(analysis.get("tools_used", [])))
         score += min(unique_tools, 3)
@@ -51,10 +67,10 @@ class AgentMemory:
             score += 1
         
         # 분석 완성도 (최대 2점)
-        if len(analysis.get("tools_used", [])) >= 2:
-            score += 2
-        elif len(analysis.get("tools_used", [])) >= 1:
-            score += 1
+        if len(analysis.get("tools_used", [])) >= 4:
+            score += 2  # 모든 도구 실행
+        elif len(analysis.get("tools_used", [])) >= 2:
+            score += 1  # 일부 도구 실행
         
         return min(score, 10)
     
@@ -161,8 +177,15 @@ class AgentMemory:
         if observations is None:
             observations = []
         
-        # 실제 도구 실행 여부 검증
-        if not execution_verified:
+        # 뉴스 트리거 시스템의 정상적인 동작인지 확인
+        is_news_trigger_only = (
+            len(tools_used) == 1 and 
+            "NewsRAGTool" in tools_used and
+            "안정적 상태" in final_answer
+        )
+        
+        # 실제 도구 실행 여부 검증 (뉴스 트리거만 실행된 경우는 허용)
+        if not execution_verified and not is_news_trigger_only:
             print(f"[메모리 경고] '{company_name}' 분석이 실제 도구 실행 없이 저장되었습니다.")
             return False
         
