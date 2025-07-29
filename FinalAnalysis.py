@@ -170,7 +170,75 @@ class FinalAnalysis:
     
     def _generate_basic_analysis(self, observations, avg_quality, company_name, tool_count):
         """LLM 실패 시 기본 분석 생성"""
-        return f"""투자 판단: 매수
+        # 데이터 내용을 기반으로 투자 성향 판단
+        investment_style = "매수"
+        risk_level = "보통"
+        strategy = "분할 매수"
+        
+        # 뉴스 데이터에서 긍정/부정 신호 분석
+        news_text = observations[0] if len(observations) > 0 else ""
+        if any(keyword in news_text.lower() for keyword in ['급등', '상승', '호재', '성장', '돌파', '신기록']):
+            investment_style = "적극 매수"
+            risk_level = "높음"
+            strategy = "적극적 매수"
+        elif any(keyword in news_text.lower() for keyword in ['하락', '폭락', '악재', '손실', '위험', '부도']):
+            investment_style = "매도"
+            risk_level = "매우 높음"
+            strategy = "즉시 매도"
+        
+        # 종토방 여론 분석
+        discussion_text = observations[1] if len(observations) > 1 else ""
+        if any(keyword in discussion_text.lower() for keyword in ['상승', '매수', '호재', '기대']):
+            if investment_style == "매수":
+                investment_style = "적극 매수"
+                strategy = "적극적 매수"
+        elif any(keyword in discussion_text.lower() for keyword in ['하락', '매도', '악재', '우려']):
+            if investment_style == "매수":
+                investment_style = "매수"
+                strategy = "신중한 매수"
+        
+        # 리서치 분석
+        research_text = observations[2] if len(observations) > 2 else ""
+        if "BUY" in research_text.upper() or "매수" in research_text:
+            if investment_style == "매수":
+                investment_style = "적극 매수"
+                strategy = "적극적 매수"
+        elif "SELL" in research_text.upper() or "매도" in research_text:
+            investment_style = "매도"
+            strategy = "즉시 매도"
+        
+        # 주가 데이터 분석
+        stock_text = observations[3] if len(observations) > 3 else ""
+        if any(keyword in stock_text.lower() for keyword in ['상승', '돌파', '신고가', '강세']):
+            if investment_style == "매수":
+                investment_style = "적극 매수"
+                strategy = "적극적 매수"
+        elif any(keyword in stock_text.lower() for keyword in ['하락', '지지선', '약세', '저점']):
+            if investment_style == "매수":
+                strategy = "신중한 매수"
+        
+        # 위험/기회 요소 동적 생성
+        risk_factors = []
+        opportunity_factors = []
+        
+        if "급등" in news_text or "상승" in news_text:
+            opportunity_factors.append("강한 상승 모멘텀")
+            risk_factors.append("급등 후 조정 가능성")
+        if "하락" in news_text or "악재" in news_text:
+            risk_factors.append("부정적 뉴스 영향")
+            opportunity_factors.append("저점 매수 기회")
+        if "BUY" in research_text.upper():
+            opportunity_factors.append("전문가 매수 의견")
+        if "SELL" in research_text.upper():
+            risk_factors.append("전문가 매도 의견")
+        
+        # 기본 위험/기회 요소
+        if not risk_factors:
+            risk_factors = ["시장 변동성", "경쟁 심화 가능성"]
+        if not opportunity_factors:
+            opportunity_factors = ["성장 가능성", "기술 혁신"]
+        
+        return f"""투자 판단: {investment_style}
 
 근거 분석:
 1. 뉴스 트리거 근거: {observations[0][:200] if len(observations) > 0 else '데이터 없음'}...
@@ -179,15 +247,15 @@ class FinalAnalysis:
 4. 주가 데이터 근거: {observations[3][:200] if len(observations) > 3 else '데이터 없음'}...
 
 위험 요소:
-- 시장 불확실성과 변동성
-- 경쟁 심화 가능성
+{chr(10).join([f"- {risk}" for risk in risk_factors])}
 
 기회 요소:
-- 성장 가능성과 기술 혁신
-- 시장 점유율 확대 기회
+{chr(10).join([f"- {opp}" for opp in opportunity_factors])}
 
 최종 권고:
-{company_name}의 종합적인 분석 결과를 바탕으로 매수를 권장합니다. 다만, 위험 분산을 위해 분할 매수 전략을 고려하시기 바랍니다.
+{company_name}의 종합적인 분석 결과를 바탕으로 {investment_style}를 권장합니다. 
+투자 위험도: {risk_level}
+투자 전략: {strategy}
 
 분석 품질: {avg_quality:.1f}/10점
 실행된 도구: {tool_count}개""" 
