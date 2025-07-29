@@ -104,7 +104,6 @@ class NaverNewsRAGPipeline:
             else:
                 print(f"네이버 API 오류: {response.status_code}")
                 return []
-                
         except Exception as e:
             print(f"뉴스 검색 중 오류: {e}")
             return []
@@ -115,133 +114,87 @@ class NaverNewsRAGPipeline:
             return ""
         
         # HTML 태그 제거
-        clean_text = re.sub(r'<[^>]+>', '', text)
-        # HTML 엔티티 디코딩
-        clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
-        clean_text = clean_text.replace('&quot;', '"').replace('&#39;', "'")
-        # 연속된 공백 제거
-        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+        text = re.sub(r'<[^>]+>', '', text)
         
-        return clean_text
+        # 특수 문자 정리
+        text = re.sub(r'&[a-zA-Z]+;', '', text)
+        text = re.sub(r'&[#\d]+;', '', text)
+        
+        # 공백 정리
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        
+        return text
 
     def extract_article_content(self, url: str) -> Dict[str, str]:
-        """기사 내용 크롤링"""
+        """뉴스 기사 내용 추출"""
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
-                'Connection': 'keep-alive',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
             
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
+            domain = urlparse(url).netloc
             
-            # 도메인별 기사 내용 추출
-            domain = urlparse(url).netloc.lower()
-            content_info = self._extract_by_domain(soup, domain, url)
-            
-            return content_info
+            return self._extract_by_domain(soup, domain, url)
             
         except Exception as e:
-            print(f"기사 크롤링 오류 {url}: {e}")
-            return {'content': '', 'publisher': '알 수 없음', 'error': str(e)}
+            print(f"기사 내용 추출 실패: {e}")
+            return {'content': '', 'publisher': '알 수 없음'}
 
     def _extract_by_domain(self, soup: BeautifulSoup, domain: str, url: str) -> Dict[str, str]:
         """도메인별 기사 내용 추출"""
         content = ""
         publisher = "알 수 없음"
         
-        try:
-            # 네이버 뉴스
-            if 'news.naver.com' in domain:
-                article_body = soup.find('div', {'id': 'dic_area'}) or soup.find('div', {'class': 'newsct_article'})
-                if article_body:
-                    content = article_body.get_text(strip=True)
-                
-                publisher_elem = soup.find('div', {'class': 'press_logo'}) or soup.find('img', {'class': 'press_logo'})
-                if publisher_elem:
-                    publisher = publisher_elem.get('alt', '알 수 없음')
+        # 네이버 뉴스
+        if "news.naver.com" in domain:
+            # 네이버 뉴스 본문
+            article_body = soup.find('div', {'id': 'articleBody'}) or soup.find('div', {'id': 'articleBodyContents'})
+            if article_body:
+                content = article_body.get_text()
             
-            # 조선일보
-            elif 'chosun.com' in domain:
-                article_body = soup.find('div', {'class': 'article-body'}) or soup.find('div', {'id': 'news_body_id'})
-                if article_body:
-                    content = article_body.get_text(strip=True)
-                publisher = "조선일보"
+            # 언론사 정보
+            press_info = soup.find('div', {'class': 'press_logo'}) or soup.find('a', {'class': 'press'})
+            if press_info:
+                publisher = press_info.get_text().strip()
+        
+        # 일반 언론사
+        else:
+            # 제목 추출
+            title_selectors = ['h1', 'h2', '.title', '.headline', '.article-title']
+            for selector in title_selectors:
+                title_elem = soup.select_one(selector)
+                if title_elem:
+                    content += title_elem.get_text() + "\n\n"
+                    break
             
-            # 중앙일보
-            elif 'joongang.co.kr' in domain:
-                article_body = soup.find('div', {'class': 'article_body'}) or soup.find('div', {'id': 'article_body'})
-                if article_body:
-                    content = article_body.get_text(strip=True)
-                publisher = "중앙일보"
+            # 본문 추출
+            content_selectors = [
+                '.article-body', '.article-content', '.news-content', '.content',
+                'article', '.post-content', '.entry-content', '.story-body'
+            ]
             
-            # 한국경제
-            elif 'hankyung.com' in domain:
-                article_body = soup.find('div', {'class': 'article-body'}) or soup.find('div', {'id': 'articletxt'})
-                if article_body:
-                    content = article_body.get_text(strip=True)
-                publisher = "한국경제"
+            for selector in content_selectors:
+                content_elem = soup.select_one(selector)
+                if content_elem:
+                    content += content_elem.get_text()
+                    break
             
-            # 매일경제
-            elif 'mk.co.kr' in domain:
-                article_body = soup.find('div', {'class': 'news_cnt_detail_wrap'}) or soup.find('div', {'class': 'art_txt'})
-                if article_body:
-                    content = article_body.get_text(strip=True)
-                publisher = "매일경제"
-            
-            # 기본 추출 로직
-            else:
-                selectors = [
-                    'div.article-body', 'div.article_body', 'div.news-article-body',
-                    'div.entry-content', 'div.post-content', 'div.content',
-                    'article', 'div[id*="article"]', 'div[class*="article"]',
-                    'div[id*="content"]', 'div[class*="content"]'
-                ]
-                
-                for selector in selectors:
-                    article_body = soup.select_one(selector)
-                    if article_body:
-                        content = article_body.get_text(strip=True)
-                        break
-                
-                # 발행사 추출
-                publisher_selectors = [
-                    'meta[property="og:site_name"]',
-                    'meta[name="author"]',
-                    '.publisher', '.press', '.source'
-                ]
-                
-                for selector in publisher_selectors:
-                    pub_elem = soup.select_one(selector)
-                    if pub_elem:
-                        publisher = pub_elem.get('content') or pub_elem.get_text(strip=True)
-                        break
-            
-            # 내용이 너무 짧으면 다른 방법 시도
-            if len(content) < 100:
-                paragraphs = soup.find_all('p')
-                content = ' '.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20])
-            
-            # 내용 정리
-            content = re.sub(r'\s+', ' ', content).strip()
+            # 언론사 정보 추출
+            publisher_selectors = ['.publisher', '.press', '.media', '.source']
+            for selector in publisher_selectors:
+                pub_elem = soup.select_one(selector)
+                if pub_elem:
+                    publisher = pub_elem.get_text().strip()
+                    break
             
             return {
-                'content': content[:10000],  # 내용 길이 제한
-                'publisher': publisher,
-                'url': url
-            }
-            
-        except Exception as e:
-            print(f"도메인별 추출 오류 {domain}: {e}")
-            return {
-                'content': '',
-                'publisher': '알 수 없음',
-                'url': url,
-                'error': str(e)
+            'content': self.clean_html_tags(content),
+            'publisher': publisher
             }
 
     def crawl_news(self, query: str = "삼성전자", max_articles: int = 10, output_path: str = "./data/news_articles.json"):
@@ -311,6 +264,132 @@ class NaverNewsRAGPipeline:
         print(f"뉴스 크롤링 완료: {len(crawled_articles)}개 기사 저장 → {output_path}")
         return crawled_articles
 
+    def analyze_news_impact(self, company_name: str) -> Dict:
+        """뉴스 영향도 분석 및 주가 변동 가능성 판단"""
+        try:
+            # 뉴스 크롤링
+            news_articles = self.crawl_news(query=company_name, max_articles=10)
+            
+            if not news_articles:
+                return {
+                    "trigger": False,
+                    "reason": "뉴스를 찾을 수 없습니다.",
+                    "analysis": "추가 분석이 필요하지 않습니다."
+                }
+            
+            # 뉴스 내용을 하나의 텍스트로 결합
+            news_text = ""
+            for article in news_articles[:8]:  # 상위 8개 기사 분석 (더 많은 기사 분석)
+                news_text += f"제목: {article.get('title', '')}\n"
+                news_text += f"내용: {article.get('content', '')[:800]}...\n\n"
+            
+            # 주가 변동 가능성 분석 프롬프트
+            impact_prompt = PromptTemplate(
+                input_variables=["company_name", "news_text"],
+                template="""
+당신은 주식 투자 전문가입니다. 주어진 뉴스를 분석하여 해당 기업의 주가에 미칠 영향을 판단해주세요.
+
+기업명: {company_name}
+
+최근 뉴스:
+{news_text}
+
+⚠️ **중요한 필터링 기준**:
+- **스포츠 관련 뉴스** (야구, 축구, 농구, 배구 등): 기업 주가와 무관하므로 "하"로 판단
+- **연예/문화 관련 뉴스** (콘서트, 드라마, 영화 등): 기업 주가와 무관하므로 "하"로 판단
+- **동명이인 관련 뉴스**: 같은 이름이지만 다른 분야의 인물/기관 관련 뉴스는 제외
+- **기업의 스포츠팀/문화사업**: 해당 기업의 직접적인 경영 활동이 아닌 경우 "하"로 판단
+
+다음 기준으로 분석해주세요:
+
+1. **주가 변동 가능성** (상/중/하)
+   - 상: 실적 발표, 대규모 계약, 경영진 변화, 규제 변화, 노조 교섭 결렬, 파업, 경영권 분쟁, 관세 정책, 수출입 제한 등
+   - 중: 신제품 출시, 시장 동향, 경쟁사 소식, 인수합병 소식, 공급망 이슈, 원자재 가격 변동, 환율 변동 등
+   - 하: 일반적인 업계 소식, 마케팅 활동, 사소한 업무 소식, 문화/사회 활동, 스포츠 관련, 연예 관련 등
+
+2. **변동 방향** (상승/하락/중립)
+   - 상승: 긍정적인 실적, 성장 전망, 호재, 성공적인 계약 체결 등
+   - 하락: 부정적인 실적, 리스크 증가, 악재, 노조 분쟁, 파업 등
+   - 중립: 영향이 미미하거나 양면적, 불확실한 상황
+
+3. **변동 강도** (강/중/약)
+   - 강: 5% 이상 주가 변동 예상 (노조 파업, 대규모 계약, 실적 발표 등)
+   - 중: 2-5% 주가 변동 예상 (일반적인 경영 소식, 시장 동향 등)
+   - 약: 2% 미만 주가 변동 예상 (사소한 업무 소식, 스포츠, 연예 등)
+
+4. **추가 분석 필요성**
+   - YES: 주가 변동 가능성이 높고 추가 분석이 필요 (노조 교섭, 실적 발표, 대규모 계약, 관세 정책, 공급망 이슈 등)
+   - NO: 주가 변동 가능성이 낮아 추가 분석 불필요 (일반적인 업무 소식, 마케팅 활동, 문화/사회 활동, 스포츠, 연예 등)
+
+분석 결과를 JSON 형식으로 출력해주세요:
+{{
+    "stock_impact": "상/중/하",
+    "direction": "상승/하락/중립",
+    "intensity": "강/중/약",
+    "need_analysis": "YES/NO",
+    "reason": "판단 근거",
+    "key_events": ["주요 이벤트1", "주요 이벤트2"],
+    "recommendation": "투자자에게 제안할 행동"
+}}
+"""
+            )
+            
+            # LLM 분석 실행
+            chain = impact_prompt | self.llm | StrOutputParser()
+            result = chain.invoke({
+                "company_name": company_name,
+                "news_text": news_text
+            })
+            
+            # JSON 파싱
+            try:
+                import re
+                json_match = re.search(r'\{.*\}', result, re.DOTALL)
+                if json_match:
+                    analysis_result = json.loads(json_match.group())
+                else:
+                    # JSON 파싱 실패 시 기본값
+                    analysis_result = {
+                        "stock_impact": "중",
+                        "direction": "중립",
+                        "intensity": "약",
+                        "need_analysis": "NO",
+                        "reason": "뉴스 분석 결과 추가 분석이 필요하지 않습니다.",
+                        "key_events": [],
+                        "recommendation": "현재 상태 유지"
+                    }
+            except:
+                analysis_result = {
+                    "stock_impact": "중",
+                    "direction": "중립",
+                    "intensity": "약",
+                    "need_analysis": "NO",
+                    "reason": "뉴스 분석 결과 추가 분석이 필요하지 않습니다.",
+                    "key_events": [],
+                    "recommendation": "현재 상태 유지"
+                }
+            
+            # 트리거 판단
+            trigger = analysis_result.get("need_analysis", "NO") == "YES"
+            
+            return {
+                "trigger": trigger,
+                "reason": analysis_result.get("reason", "분석 불가"),
+                "analysis": analysis_result,
+                "news_count": len(news_articles),
+                "key_events": analysis_result.get("key_events", [])
+            }
+            
+        except Exception as e:
+            print(f"뉴스 영향도 분석 중 오류: {e}")
+            return {
+                "trigger": False,
+                "reason": f"분석 중 오류 발생: {str(e)}",
+                "analysis": {},
+                "news_count": 0,
+                "key_events": []
+            }
+
     def _load_documents(self):
         """JSON 파일에서 뉴스 기사 로드"""
         with open(self.json_path, "r", encoding="utf-8") as f:
@@ -344,243 +423,134 @@ class NaverNewsRAGPipeline:
         
         # 그룹별로 세그멘테이션 처리
         group_size = 5  # 뉴스는 내용이 길어서 그룹 크기 줄임
+        total_groups = (len(docs) + group_size - 1) // group_size
         
-        for i in tqdm(range(0, len(docs), group_size), desc="세그멘테이션 처리"):
-            group = docs[i:i+group_size]
+        print(f"세그멘테이션 배치 처리: 1-{min(group_size, len(docs))}/{len(docs)}")
+        
+        for i in range(0, len(docs), group_size):
+            group = docs[i:i + group_size]
+            batch_num = (i // group_size) + 1
             
-            # 각 기사별로 개별 처리
+            # 그룹의 모든 문서 내용을 결합
+            combined_text = ""
             for doc in group:
-                try:
-                    # 기사 내용이 너무 길면 일부만 처리
-                    content = doc.page_content[:15000]  # 15000자 제한
+                combined_text += doc.page_content + "\n\n"
+            
+            try:
+                # CLOVA Studio 세그멘테이션 실행
+                segments = self._send_segmentation_request(combined_text)
+                
+                # 세그먼트를 Document로 변환
+                for j, segment in enumerate(segments):
+                    if len(segment.strip()) > 100:  # 최소 길이 필터
+                        chunked_doc = Document(
+                            page_content=segment,
+                            metadata={
+                                "source": f"batch_{batch_num}_segment_{j+1}",
+                                "original_docs": [doc.metadata.get("title", "") for doc in group]
+                            }
+                        )
+                        self.chunked_docs.append(chunked_doc)
+                
+                print(f"배치 {batch_num}: {len(segments)}개 세그먼트 생성")
                     
-                    result_segments = self._send_segmentation_request(content)
-                    
-                    for segment in result_segments:
-                        if len(segment.strip()) > 50:  # 너무 짧은 세그먼트 제외
-                            self.chunked_docs.append({
-                                "page_content": segment,
-                                "metadata": {
-                                    "source_id": doc.metadata.get("id"),
-                                    "title": doc.metadata.get("title"),
-                                    "publisher": doc.metadata.get("publisher"),
-                                    "pub_date": doc.metadata.get("pub_date"),
-                                    "keyword": doc.metadata.get("keyword")
-                                }
-                            })
-                    
-                    time.sleep(1)  # API 호출 간격
-                    
-                except Exception as e:
-                    print(f"세그멘테이션 실패: {e}")
-                    # 실패한 경우 원본 내용을 그대로 청크로 사용
-                    content = doc.page_content
-                    # 길이에 따라 분할
-                    chunk_size = 3000
-                    for j in range(0, len(content), chunk_size):
-                        chunk = content[j:j+chunk_size]
-                        if len(chunk.strip()) > 50:
-                            self.chunked_docs.append({
-                                "page_content": chunk,
-                                "metadata": {
-                                    "source_id": doc.metadata.get("id"),
-                                    "title": doc.metadata.get("title"),
-                                    "publisher": doc.metadata.get("publisher"),
-                                    "pub_date": doc.metadata.get("pub_date"),
-                                    "keyword": doc.metadata.get("keyword")
-                                }
-                            })
-                    time.sleep(3)
+            except Exception as e:
+                print(f"배치 {batch_num} 세그멘테이션 실패: {e}")
+                # 실패 시 원본 문서를 그대로 사용
+                for doc in group:
+                    self.chunked_docs.append(doc)
         
-        # 결과 저장
-        os.makedirs("./data", exist_ok=True)
-        
-        # JSON 저장
-        with open("./data/news_segments.json", "w", encoding="utf-8") as f:
-            json.dump(self.chunked_docs, f, ensure_ascii=False, indent=2)
-            print(f"세그멘테이션 완료: {len(self.chunked_docs)}개 세그먼트 생성")
-            print("news_segments.json 저장 완료")
-        
-        # 병합된 텍스트 저장
-        merged_text = "\n\n".join(item["page_content"] for item in self.chunked_docs)
-        with open("./data/merged_news_text.txt", "w", encoding="utf-8") as f:
-            f.write(merged_text.strip())
-            print("merged_news_text.txt 저장 완료")
+        print(f"총 {len(self.chunked_docs)}개의 segment 문서가 생성되었습니다.")
+        return self.chunked_docs
 
     def embed_and_store(self):
-        """임베딩 생성 및 ChromaDB 저장"""
+        """문서 임베딩 및 벡터 저장소에 저장"""
         if not self.chunked_docs:
-            raise ValueError("세그멘테이션이 먼저 실행되어야 합니다.")
-
-        # Document 객체 생성
-        self.documents = []
-        for item in self.chunked_docs:
-            self.documents.append(Document(
-                page_content=item["page_content"],
-                metadata={
-                    "source_id": item["metadata"].get("source_id", ""),
-                    "title": item["metadata"].get("title", ""),
-                    "publisher": item["metadata"].get("publisher", ""),
-                    "pub_date": item["metadata"].get("pub_date", ""),
-                    "keyword": item["metadata"].get("keyword", ""),
-                    "id": str(uuid.uuid4())
-                }
-            ))
-
-        # ChromaDB 클라이언트 설정
-        client = chromadb.PersistentClient(path=self.db_path)
+            self.segment_documents()
         
-        # 기존 컬렉션 삭제 후 새로 생성
-        try:
-            client.delete_collection(name=self.collection_name)
-            print(f"기존 컬렉션 '{self.collection_name}' 삭제")
-        except Exception:
-            pass  # 컬렉션이 없으면 무시
-        
-        client.create_collection(name=self.collection_name, metadata={"hnsw:space": "cosine"})
-        
-        # Chroma 벡터스토어 생성
+        # ChromaDB 벡터 저장소 초기화
         self.vectorstore = Chroma(
-            client=client,
-            collection_name=self.collection_name,
-            embedding_function=self.embedding_model
+            persist_directory=self.db_path,
+            embedding_function=self.embedding_model,
+            collection_name=self.collection_name
         )
-
-        # 텍스트와 메타데이터 준비
-        texts, metadatas = [], []
-        for doc in self.documents:
-            # 텍스트 정리 (널문자 제거, 길이 제한)
-            text = str(doc.page_content).replace("\x00", "").strip()[:8000]
-            
-            if not text or len(text) < 20:
-                continue  # 너무 짧은 텍스트는 건너뜀
-
-            # 메타데이터 평면화 (ChromaDB는 중첩 구조 지원 안함)
-            flattened_metadata = {
-                "source_id": str(doc.metadata.get("source_id", "")),
-                "title": str(doc.metadata.get("title", ""))[:200],  # 길이 제한
-                "publisher": str(doc.metadata.get("publisher", "")),
-                "pub_date": str(doc.metadata.get("pub_date", "")),
-                "keyword": str(doc.metadata.get("keyword", "")),
-                "id": str(doc.metadata.get("id", ""))
-            }
-
-            texts.append(text)
-            metadatas.append(flattened_metadata)
-
-        # ChromaDB에 저장
-        print(f"임베딩 및 저장 시작: {len(texts)}개 문서")
         
-        # 배치 단위로 저장 (ChromaDB 안정성을 위해)
-        batch_size = 100
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i+batch_size]
-            batch_metadatas = metadatas[i:i+batch_size]
-            
-            self.vectorstore.add_texts(texts=batch_texts, metadatas=batch_metadatas)
-            print(f"배치 {i//batch_size + 1} 저장 완료: {len(batch_texts)}개 문서")
-            time.sleep(0.5)  # 안정성을 위한 대기
-
-        print(f"임베딩 및 ChromaDB 저장 완료: 총 {len(texts)}개 문서")
+        # 문서 추가
+        self.vectorstore.add_documents(self.chunked_docs)
+        
+        # 검색기 설정
+        self.retriever = self.vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 5}
+        )
+        
+        print(f"벡터 저장소에 {len(self.chunked_docs)}개 문서 저장 완료")
 
     def query_news(self, question: str, k: int = 5) -> str:
-        """뉴스 기반 질의응답"""
-        if self.vectorstore is None:
-            raise ValueError("임베딩이 먼저 수행되어야 합니다.")
+        """뉴스 질의응답"""
+        try:
+            # 벡터 저장소가 없으면 초기화
+            if not self.vectorstore:
+                self.embed_and_store()
+            
+            # 관련 문서 검색
+            docs = self.retriever.get_relevant_documents(question)
+            
+            if not docs:
+                return "관련 뉴스를 찾을 수 없습니다."
+            
+            # RAG 프롬프트 생성
+            rag_prompt = PromptTemplate(
+                input_variables=["context", "question"],
+                template="""
+다음 뉴스 기사들을 참고하여 질문에 답변해주세요.
 
-        # 검색기 설정
-        retriever = self.vectorstore.as_retriever(search_kwargs={"k": k})
-        
-        # 프롬프트 템플릿
-        prompt = PromptTemplate.from_template(
-            '''당신은 금융 투자 전문가이자 뉴스 분석 전문가입니다.
-아래에 제공된 뉴스 기사들을 바탕으로 질문에 대해 정확하고 객관적으로 답변해주세요.
-
-답변 시 다음 사항을 고려하세요:
-1. 제공된 뉴스 기사의 내용만을 근거로 답변하세요
-2. 기사의 발행사와 날짜 정보를 활용하세요
-3. 여러 기사에서 언급된 공통 내용을 종합하세요
-4. 추측이나 개인적 의견은 배제하세요
-
-# 질문:
-{question}
-
-# 관련 뉴스 기사들:
+뉴스 기사:
 {context}
 
-# 답변:'''
+질문: {question}
+
+답변:
+"""
         )
 
-        def format_docs(docs: List[Document]) -> str:
-            formatted_docs = []
-            for i, doc in enumerate(docs, 1):
-                metadata = doc.metadata
-                title = metadata.get('title', '제목 없음')
-                publisher = metadata.get('publisher', '발행사 미상')
-                pub_date = metadata.get('pub_date', '날짜 미상')
-                
-                formatted_doc = f"""[기사 {i}]
-제목: {title}
-발행사: {publisher}
-날짜: {pub_date}
-내용: {doc.page_content[:1000]}...
-"""
-                formatted_docs.append(formatted_doc)
+            # 문서 포맷팅
+            def format_docs(docs: List[Document]) -> str:
+                formatted_docs = []
+                for i, doc in enumerate(docs, 1):
+                    formatted_docs.append(f"{i}. {doc.page_content[:500]}...")
+                return "\n\n".join(formatted_docs)
             
-            return "\n\n".join(formatted_docs)
-
-        # RAG 체인 구성
-        rag_chain_from_docs = (
-            RunnablePassthrough.assign(context=(lambda x: format_docs(x["context"])))
-            | prompt
+            # RAG 체인 실행
+            rag_chain = (
+                {"context": lambda x: format_docs(x), "question": RunnablePassthrough()}
+                | rag_prompt
             | self.llm
             | StrOutputParser()
         )
 
-        rag_chain_with_source = RunnableParallel(
-            {"context": retriever, "question": RunnablePassthrough()}
-        ).assign(answer=rag_chain_from_docs)
-
-        # 질의 실행
-        print(f"질문 처리 중: {question}")
-        result = rag_chain_with_source.invoke(question)
-        
-        return result['answer']
+            result = rag_chain.invoke(docs)
+            return result
+            
+        except Exception as e:
+            return f"뉴스 질의응답 중 오류: {str(e)}"
 
 def main():
-    """메인 실행 함수"""
+    """테스트용 메인 함수"""
     pipeline = NaverNewsRAGPipeline(
         json_path="./data/news_articles.json",
         db_path="./chroma_langchain_db",
         collection_name="naver_news_docs"
     )
     
-    # 0단계: 뉴스 크롤링
-    print("=== 1단계: 뉴스 크롤링 ===")
-    pipeline.crawl_news(query="삼성전자", max_articles=30)
+    # 뉴스 크롤링 테스트
+    articles = pipeline.crawl_news("삼성전자", max_articles=5)
+    print(f"크롤링된 기사 수: {len(articles)}")
     
-    # 1단계: CLOVA 세그멘테이션
-    print("\n=== 2단계: 문서 세그멘테이션 ===")
-    pipeline.segment_documents()
-    
-    # 2단계: 임베딩 및 ChromaDB 저장
-    print("\n=== 3단계: 임베딩 및 DB 저장 ===")
-    pipeline.embed_and_store()
-    
-    # 3단계: 질의응답 테스트
-    print("\n=== 4단계: RAG 질의응답 테스트 ===")
-    test_questions = [
-        "삼성전자의 최근 실적은 어떤가요?",
-        "삼성전자 주가에 영향을 주는 주요 요인은 무엇인가요?",
-        "삼성전자의 신제품이나 기술 개발 소식이 있나요?"
-    ]
-    
-    for question in test_questions:
-        print(f"\n질문: {question}")
-        print("-" * 50)
-        answer = pipeline.query_news(question)
-        print(f"답변: {answer}")
-        print("=" * 80)
+    # 뉴스 영향도 분석 테스트
+    impact_result = pipeline.analyze_news_impact("삼성전자")
+    print(f"주가 변동 가능성: {impact_result['trigger']}")
+    print(f"이유: {impact_result['reason']}")
 
 if __name__ == "__main__":
     main()
